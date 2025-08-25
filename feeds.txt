@@ -1,0 +1,29 @@
+# Major US politics / national outlets
+https://rss.politico.com/politics-news.xml
+https://thehill.com/feed/
+https://rss.cnn.com/rss/cnn_allpolitics.rss
+https://feeds.foxnews.com/foxnews/politics
+https://feeds.nbcnews.com/nbcnews/public/politics
+https://www.cbsnews.com/latest/rss/politics
+https://www.npr.org/rss/rss.php?id=1014
+https://feeds.reuters.com/reuters/politicsNews
+https://www.axios.com/feeds/politics.xml
+https://www.theguardian.com/us-news/rss
+https://apnews.com/hub/politics?output=atom
+https://feeds.a.dj.com/rss/RSSUSPOLITICS.xml
+
+# Editorial/analysis (often includes quotes)
+https://www.realclearpolitics.com/index.xml
+https://www.nationalreview.com/feed/
+https://www.theatlantic.com/feed/
+https://www.newyorker.com/feed/news
+https://rss.nytimes.com/services/xml/rss/nyt/Politics.xml    # paywall likely
+https://www.washingtonpost.com/politics/?output=rss          # paywall likely
+
+# A few statehouse roundups (add your state(s) as needed)
+https://www.politico.com/rss/politics-news.xml
+https://www.texastribune.org/feed/
+https://www.penncapital-star.com/feed/
+https://calmatters.org/feed/
+https://www.ajc.com/news/politics/rss2/                    # Georgia
+https://www.tampabay.com/section/politics/?output=atom     # Florida TB Times
