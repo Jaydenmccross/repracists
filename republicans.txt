@@ -1,0 +1,101 @@
+# US Senate Republicans
+Mitch McConnell
+John Thune
+John Barrasso
+John Cornyn
+Chuck Grassley
+Susan Collins
+Lisa Murkowski
+Lindsey Graham
+Tim Scott
+Ted Cruz
+Marco Rubio
+Rick Scott
+Josh Hawley
+Tom Cotton
+Mike Lee
+Rand Paul
+Joni Ernst
+Deb Fischer
+Marsha Blackburn
+Bill Hagerty
+Roger Marshall
+Jerry Moran
+Cindy Hyde-Smith
+Roger Wicker
+Tommy Tuberville
+Katie Britt
+John Kennedy
+Bill Cassidy
+Mike Crapo
+James Risch
+Steve Daines
+Kevin Cramer
+John Hoeven
+Shelley Moore Capito
+Todd Young
+Mike Braun
+Dan Sullivan
+Danes Sullivan
+Ron Johnson
+Cynthia Lummis
+Eric Schmitt
+Markwayne Mullin
+
+# House Leadership / Key Members
+Mike Johnson
+Steve Scalise
+Elise Stefanik
+Tom Emmer
+Jim Jordan
+Marjorie Taylor Greene
+Lauren Boebert
+Matt Gaetz
+Paul Gosar
+Andy Biggs
+Chip Roy
+Byron Donalds
+Kat Cammack
+Nancy Mace
+Nicole Malliotakis
+Debbie Lesko
+Virginia Foxx
+Patrick McHenry
+Kevin McCarthy
+
+# Governors
+Ron DeSantis (Florida)
+Greg Abbott (Texas)
+Kristi Noem (South Dakota)
+Kim Reynolds (Iowa)
+Brian Kemp (Georgia)
+Glenn Youngkin (Virginia)
+Bill Lee (Tennessee)
+Sarah Huckabee Sanders (Arkansas)
+Doug Burgum (North Dakota)
+Kay Ivey (Alabama)
+Mike DeWine (Ohio)
+Mike Parson (Missouri)
+Mark Gordon (Wyoming)
+Jim Pillen (Nebraska)
+Brad Little (Idaho)
+Spencer Cox (Utah)
+Tate Reeves (Mississippi)
+
+# Former/High-profile Republicans
+Donald Trump
+Mike Pence
+Nikki Haley
+Mitt Romney
+George W. Bush
+Jeb Bush
+Chris Christie
+Rick Perry
+John Kasich
+Scott Walker
+Ben Carson
+Rudy Giuliani
+Newt Gingrich
+Dick Cheney
+Liz Cheney
+Karl Rove
