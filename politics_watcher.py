@@ -8,40 +8,89 @@ Politics Watcher — flags when a known Republican is quoted with variants of:
 - De-dupes via sqlite
 - Sends an email with link + snippet for each new hit
 - Silent unless a match occurs
-- NEW: FORCE_TEST mode to send a test alert on demand
+- FORCE_TEST mode to send a test alert on demand
+- Hardened fetch: retries, UA rotation, XML sanity, bad-feed muting
 
 Env (set in GitHub Actions Secrets or your local env):
   SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_FROM, EMAIL_TO
 
 Optional env:
   FORCE_TEST=1           -> send a single test alert email and exit(0)
-  FEEDS_FILE=feeds.txt   -> extra feeds (one URL per line, # comments allowed)
+  FEEDS_FILE=feeds.txt   -> extra feeds (one URL per line, '#' comments allowed)
   MAX_LINKS=140          -> cap number of article pages to fetch (default 120)
   TIMEOUT=20             -> per HTTP request (seconds)
+  FAIL_THRESHOLD=3       -> how many consecutive failures before muting a feed
+  MUTE_HOURS=24          -> how long to mute a noisy feed after threshold
 """
 
 import os, re, sys, time, json, sqlite3, hashlib, html, urllib.request, xml.etree.ElementTree as ET
 from urllib.parse import quote, urlparse
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 DB = "pol_watch.db"
 OUT_DIR = "out"
 
-TIMEOUT = int(os.environ.get("TIMEOUT", "20"))
-UA = {"User-Agent": "PoliticsWatcher/1.1 (+news scanner)"}
+# Tunables (can override via env)
+TIMEOUT        = int(os.environ.get("TIMEOUT", "20"))
+MAX_LINKS      = int(os.environ.get("MAX_LINKS", "120"))
+FAIL_THRESHOLD = int(os.environ.get("FAIL_THRESHOLD", "3"))
+MUTE_HOURS     = int(os.environ.get("MUTE_HOURS", "24"))
 
-# Broadened phrase variants (smart quotes, em dash, punctuation, spacing)
+# User-Agents: rotate on retries
+UA_STRINGS = [
+    "PoliticsWatcher/1.3 (+https://github.com/)",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+]
+
+# Phrase variants (smart quotes, em dash, punctuation, spacing)
 PHRASE_RE = re.compile(
     r"""
-    \b( i['’]?m | i \s+ am )       # I'm / I’m / I am
-    \s+ not \s+ racist \s*         # not racist
-    [\s,;:\-\u2014]*               # optional punctuation/dash
-    but \b                          # but
+    \b( i['’]?m | i \s+ am )   # I'm / I’m / I am
+    \s+ not \s+ racist \s*     # not racist
+    [\s,;:\-\u2014]*           # optional punctuation/dash
+    but \b                     # but
     """,
     re.IGNORECASE | re.VERBOSE
 )
 
-# Names list (one per line) comes from republicans.txt if present
+# --- Feeds ---
+
+def google_news_rss(query: str) -> str:
+    return f"https://news.google.com/rss/search?q={quote(query)}&hl=en-US&gl=US&ceid=US:en"
+
+# Resilient built-in feeds (you can extend via feeds.txt)
+BASE_FEEDS = [
+    # National politics (broad + stable)
+    "https://rss.politico.com/politics-news.xml",
+    "https://thehill.com/feed/",
+    "https://www.npr.org/rss/rss.php?id=1014",
+    "https://rss.cnn.com/rss/cnn_allpolitics.rss",
+    "https://feeds.foxnews.com/foxnews/politics",
+    "https://feeds.nbcnews.com/nbcnews/public/politics",
+    "https://www.cbsnews.com/latest/rss/politics",
+    "https://www.theguardian.com/us-news/rss",
+    "https://feeds.reuters.com/reuters/worldNews",  # broad, but alive
+
+    # Google News topic/search backstops (very resilient)
+    "https://news.google.com/rss/search?q=US%20politics&hl=en-US&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=site%3Athehill.com&hl=en-US&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=site%3Apolitico.com%20politics&hl=en-US&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=site%3Anbcnews.com%20politics&hl=en-US&gl=US&ceid=US:en",
+]
+
+def load_extra_feeds(path=os.environ.get("FEEDS_FILE", "feeds.txt")):
+    feeds = []
+    if os.path.isfile(path):
+        with open(path, "r", encoding="utf-8") as f:
+            for ln in f:
+                u = ln.split("#", 1)[0].strip()   # strip inline comments + whitespace
+                if not u:
+                    continue
+                feeds.append(u)
+    return feeds
+
+# --- Name list ---
+
 def load_names(path="republicans.txt"):
     if not os.path.isfile(path):
         return [
@@ -55,47 +104,104 @@ def load_names(path="republicans.txt"):
     with open(path, "r", encoding="utf-8") as f:
         return [ln.strip() for ln in f if ln.strip() and not ln.strip().startswith("#")]
 
-def google_news_rss(query: str) -> str:
-    return f"https://news.google.com/rss/search?q={quote(query)}&hl=en-US&gl=US&ceid=US:en"
+# --- Storage ---
 
-# Built-in general feeds (we’ll merge with feeds.txt)
-BASE_FEEDS = [
-    # Wires / major US politics feeds
-    "https://feeds.reuters.com/reuters/politicsNews",
-    "https://rss.politico.com/politics-news.xml",
-    "https://thehill.com/feed/",
-    "https://www.npr.org/rss/rss.php?id=1014",
-    "https://rss.cnn.com/rss/cnn_allpolitics.rss",
-    "https://feeds.foxnews.com/foxnews/politics",
-    "https://www.abc.net.au/news/feed/51120/rss.xml",  # world/US politics pick-ups
-    "https://feeds.a.dj.com/rss/RSSUSPOLITICS.xml",    # WSJ politics (often paywalled)
-    "https://www.cbsnews.com/latest/rss/politics",
-    "https://feeds.nbcnews.com/nbcnews/public/politics",
-    "https://www.axios.com/feeds/politics.xml",
-    "https://www.theguardian.com/us-news/rss",
-    # State-level roundups (sample, you can add many more via feeds.txt)
-    "https://apnews.com/hub/politics?output=atom",
-]
+def ensure_db():
+    con = sqlite3.connect(DB)
+    cur = con.cursor()
+    cur.execute("""CREATE TABLE IF NOT EXISTS hits(
+        id TEXT PRIMARY KEY,
+        ts INTEGER,
+        person TEXT,
+        url TEXT,
+        title TEXT,
+        feed TEXT,
+        snippet TEXT
+    )""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS seen(
+        fp TEXT PRIMARY KEY,
+        ts INTEGER
+    )""")
+    # Track noisy feeds so we can mute them after repeated failures
+    cur.execute("""CREATE TABLE IF NOT EXISTS feed_failures(
+        feed TEXT PRIMARY KEY,
+        fail_count INTEGER DEFAULT 0,
+        muted_until INTEGER DEFAULT 0
+    )""")
+    con.commit(); con.close()
 
-def load_extra_feeds(path=os.environ.get("FEEDS_FILE", "feeds.txt")):
-    feeds = []
-    if os.path.isfile(path):
-        with open(path, "r", encoding="utf-8") as f:
-            for ln in f:
-                u = ln.strip()
-                if not u or u.startswith("#"):
-                    continue
-                feeds.append(u)
-    return feeds
+def fp(*parts) -> str:
+    h = hashlib.sha256()
+    for p in parts:
+        h.update((p or "").encode("utf-8")); h.update(b"|")
+    return h.hexdigest()[:28]
 
-def fetch(url: str) -> bytes:
-    try:
-        req = urllib.request.Request(url, headers=UA)
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-            return r.read()
-    except Exception as e:
-        print(f"[warn] fetch failed {url}: {e}", file=sys.stderr)
-        return b""
+def host(u: str) -> str:
+    try: return urlparse(u).netloc
+    except: return ""
+
+# --- Feed failure/muting ---
+
+def is_muted(feed: str) -> bool:
+    con = sqlite3.connect(DB)
+    cur = con.cursor()
+    cur.execute("SELECT muted_until FROM feed_failures WHERE feed=?", (feed,))
+    row = cur.fetchone()
+    con.close()
+    if not row: return False
+    muted_until = row[0] or 0
+    return int(time.time()) < muted_until
+
+def note_success(feed: str):
+    con = sqlite3.connect(DB)
+    cur = con.cursor()
+    cur.execute("""INSERT INTO feed_failures(feed, fail_count, muted_until)
+                   VALUES(?, 0, 0)
+                   ON CONFLICT(feed) DO UPDATE SET fail_count=0, muted_until=0""", (feed,))
+    con.commit(); con.close()
+
+def note_failure(feed: str):
+    now = int(time.time())
+    con = sqlite3.connect(DB)
+    cur = con.cursor()
+    cur.execute("SELECT fail_count FROM feed_failures WHERE feed=?", (feed,))
+    row = cur.fetchone()
+    if row is None:
+        fail_count = 1
+        muted_until = 0
+        cur.execute("INSERT INTO feed_failures(feed, fail_count, muted_until) VALUES(?,?,?)",
+                    (feed, fail_count, muted_until))
+    else:
+        fail_count = (row[0] or 0) + 1
+        muted_until = 0
+        if fail_count >= FAIL_THRESHOLD:
+            muted_until = now + MUTE_HOURS * 3600
+            fail_count = 0  # reset counter after muting
+        cur.execute("UPDATE feed_failures SET fail_count=?, muted_until=? WHERE feed=?",
+                    (fail_count, muted_until, feed))
+    con.commit(); con.close()
+    if muted_until:
+        print(f"[warn] muting feed for {MUTE_HOURS}h: {feed}", file=sys.stderr)
+
+# --- Fetching/parsing ---
+
+def fetch(url: str, retries: int = 3, backoff: float = 1.5) -> bytes:
+    """Return bytes or b'' on failure; handles UA rotation, retries, and XML sanity."""
+    for i in range(retries):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": UA_STRINGS[min(i, len(UA_STRINGS)-1)]})
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+                data = r.read()
+                # quick sanity: RSS/Atom should start with '<'
+                if not data.strip().startswith(b"<"):
+                    raise ValueError("non-XML response")
+                return data
+        except Exception as e:
+            if i == retries - 1:
+                print(f"[warn] fetch failed {url}: {e}", file=sys.stderr)
+                return b""
+            time.sleep(backoff ** i)
+    return b""
 
 def parse_rss(xml_bytes: bytes, source: str):
     items = []
@@ -118,6 +224,7 @@ def parse_rss(xml_bytes: bytes, source: str):
             except: pass
         return int(time.time())
 
+    # RSS
     if root.tag.lower().endswith("rss"):
         ch = root.find("channel")
         if ch is None: return items
@@ -128,6 +235,7 @@ def parse_rss(xml_bytes: bytes, source: str):
             items.append({"title": title, "url": link, "ts": get_ts(pub), "feed": source})
         return items
 
+    # Atom
     if root.tag.endswith("feed") or root.tag.endswith("}feed"):
         for it in root.findall("atom:entry", ns) + root.findall("entry"):
             title = (it.findtext("atom:title", default="", namespaces=ns) or it.findtext("title", default="")).strip()
@@ -156,34 +264,7 @@ def fetch_text(url: str) -> str:
     raw = fetch(url)
     return strip_html(raw) if raw else ""
 
-def ensure_db():
-    con = sqlite3.connect(DB)
-    cur = con.cursor()
-    cur.execute("""CREATE TABLE IF NOT EXISTS hits(
-        id TEXT PRIMARY KEY,
-        ts INTEGER,
-        person TEXT,
-        url TEXT,
-        title TEXT,
-        feed TEXT,
-        snippet TEXT
-    )""")
-    cur.execute("""CREATE TABLE IF NOT EXISTS seen(
-        fp TEXT PRIMARY KEY,
-        ts INTEGER
-    )""")
-    con.commit(); con.close()
-
-def fp(*parts) -> str:
-    h = hashlib.sha256()
-    for p in parts:
-        h.update((p or "").encode("utf-8"))
-        h.update(b"|")
-    return h.hexdigest()[:28]
-
-def host(u: str) -> str:
-    try: return urlparse(u).netloc
-    except: return ""
+# --- Hit recording ---
 
 def context_snippet(text: str, match: re.Match, radius=140) -> str:
     a, b = match.span()
@@ -209,6 +290,8 @@ def already_seen(key: str) -> bool:
         con.commit()
     con.close()
     return bool(row)
+
+# --- Email ---
 
 def send_email(subject: str, body: str):
     import smtplib
@@ -237,6 +320,8 @@ def send_email(subject: str, body: str):
         s.send_message(msg)
     return True
 
+# --- Main run ---
+
 def run_once():
     ensure_db()
 
@@ -258,7 +343,7 @@ def run_once():
 
     people = load_names()
 
-    # Build per-person Google News queries for exact phrase (best precision)
+    # Build per-person Google News queries for exact phrase
     search_feeds = []
     for person in people:
         q = f"\"{person}\" AND (\"I'm not racist but\" OR \"I am not racist but\")"
@@ -267,20 +352,35 @@ def run_once():
     # Merge built-in + extra feeds
     FEEDS = BASE_FEEDS + load_extra_feeds()
 
-    # Pull general feeds
     general_items = []
+    # Fetch general feeds (with muting)
     for f in FEEDS:
-        general_items.extend(parse_rss(fetch(f), f))
+        if is_muted(f):
+            print(f"[info] muted feed (skipping for now): {f}")
+            continue
+        data = fetch(f)
+        if data:
+            note_success(f)
+            general_items.extend(parse_rss(data, f))
+        else:
+            note_failure(f)
 
     # Limit page fetches per run so we don't hammer sites
-    MAX_LINKS = int(os.environ.get("MAX_LINKS", "120"))
     fetched_links = 0
-
     new_hits = []
 
     # Pass 1: Targeted search feeds
     for person, rss in search_feeds:
-        items = parse_rss(fetch(rss), rss)
+        if is_muted(rss):
+            continue
+        data = fetch(rss)
+        if data:
+            note_success(rss)
+            items = parse_rss(data, rss)
+        else:
+            note_failure(rss)
+            items = []
+
         for it in items:
             if fetched_links >= MAX_LINKS:
                 break
@@ -363,5 +463,3 @@ def run_once():
 
 if __name__ == "__main__":
     run_once()
-
-
