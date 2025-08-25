@@ -1,0 +1,42 @@
+name: Test Email
+
+on:
+  workflow_dispatch:   # lets you trigger it manually
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send test email
+        run: |
+          python - <<'EOF'
+          import os, smtplib
+          from email.message import EmailMessage
+
+          host = os.environ["SMTP_HOST"]
+          port = int(os.environ["SMTP_PORT"])
+          user = os.environ["SMTP_USER"]
+          pwd  = os.environ["SMTP_PASS"]
+          from_addr = os.environ["EMAIL_FROM"]
+          to_addr   = os.environ["EMAIL_TO"]
+
+          msg = EmailMessage()
+          msg["Subject"] = "✅ Test Email from GitHub Actions"
+          msg["From"] = from_addr
+          msg["To"] = to_addr
+          msg.set_content("Hello!\n\nIf you see this, your SMTP secrets are working.")
+
+          with smtplib.SMTP(host, port) as s:
+              s.starttls()
+              s.login(user, pwd)
+              s.send_message(msg)
+
+          print("Email sent OK")
+          EOF
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO:   ${{ secrets.EMAIL_TO }}
