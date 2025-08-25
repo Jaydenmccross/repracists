@@ -1,4 +1,4 @@
-name: Test Email (Debug)
+name: Test Email (Deep Debug)
 
 on:
   workflow_dispatch:
@@ -7,55 +7,87 @@ jobs:
   send:
     runs-on: ubuntu-latest
     steps:
-      - name: Dump which email env vars exist (no secrets shown)
+      - name: Check required secrets (no values printed)
         run: |
-          for v in SMTP_HOST SMTP_PORT SMTP_USER EMAIL_FROM EMAIL_TO; do
-            if [ -z "${!v}" ]; then echo "::error::$v is NOT set"; else echo "$v is set"; fi
+          missing=0
+          for v in SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASS EMAIL_FROM EMAIL_TO; do
+            if [ -z "${!v}" ]; then
+              echo "::error::$v is NOT set"
+              missing=1
+            else
+              echo "$v is set"
+            fi
           done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::One or more secrets missing. Add them in Settings → Secrets and variables → Actions."
+            exit 1
+          fi
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           EMAIL_TO:   ${{ secrets.EMAIL_TO }}
 
-      - name: Send test email with verbose errors
+      - name: Try sending via Outlook hosts (office365 first, fallback to smtp-mail)
         run: |
-          python - <<'EOF'
+          python - <<'PY'
           import os, smtplib, sys, traceback
           from email.message import EmailMessage
 
-          def need(name):
-              v = os.environ.get(name)
-              if not v:
-                  print(f"::error::{name} is missing")
-                  sys.exit(1)
-              return v
+          def attempt(host, port, user, pwd, from_addr, to_addr):
+              print(f"\n--- Attempting {host}:{port} as {user} ---")
+              try:
+                  s = smtplib.SMTP(host, int(port), timeout=30)
+                  s.set_debuglevel(1)               # show SMTP conversation (password not shown)
+                  s.ehlo()
+                  s.starttls()
+                  s.ehlo()
+                  s.login(user, pwd)
+                  msg = EmailMessage()
+                  msg["Subject"] = "✅ Outlook SMTP test from GitHub Actions"
+                  msg["From"] = from_addr
+                  msg["To"] = to_addr
+                  msg.set_content("If you see this, SMTP worked.")
+                  s.send_message(msg)
+                  s.quit()
+                  print(f"SUCCESS via {host}")
+                  return True
+              except Exception as e:
+                  print(f"ERROR via {host}: {e}")
+                  traceback.print_exc()
+                  return False
 
-          host = need("SMTP_HOST")
-          port = int(need("SMTP_PORT"))
-          user = need("SMTP_USER")
-          pwd  = need("SMTP_PASS")
-          from_addr = need("EMAIL_FROM")
-          to_addr   = need("EMAIL_TO")
+          user = os.environ["SMTP_USER"]
+          pwd  = os.environ["SMTP_PASS"]
+          from_addr = os.environ["EMAIL_FROM"]
+          to_addr   = os.environ["EMAIL_TO"]
 
-          print(f"Host={host} Port={port} User={user} From={from_addr} To={to_addr}")
+          # Force From == User for Outlook/Hotmail
           if from_addr.lower() != user.lower():
-              print("::warning::For Outlook/Hotmail, EMAIL_FROM should usually equal SMTP_USER")
+              print("::warning:: For Outlook/Hotmail, EMAIL_FROM should match SMTP_USER exactly.")
 
-          msg = EmailMessage()
-          msg["Subject"] = "✅ Test Email from GitHub Actions"
-          msg["From"] = from_addr
-          msg["To"] = to_addr
-          msg.set_content("If you see this, SMTP worked.")
+          # Try provided host/port first
+          host = os.environ.get("SMTP_HOST", "smtp.office365.com")
+          port = os.environ.get("SMTP_PORT", "587")
 
-          try:
-              s = smtplib.SMTP(host, port, timeout=30)
-              s.set_debuglevel(1)  # print SMTP conversation (safe; hides password)
-              s.ehlo()
-              s.starttls()
-              s.ehlo()
-              s.login(user, pwd)
-              s.send_message(msg)
-              s.quit()
-              print("Email se
+          ok = attempt(host, port, user, pwd, from_addr, to_addr)
+
+          # Fallback #1: smtp.office365.com:587 (modern Microsoft 365 endpoint)
+          if not ok and (host.lower() != "smtp.office365.com" or port != "587"):
+              ok = attempt("smtp.office365.com", "587", user, pwd, from_addr, to_addr)
+
+          # Fallback #2: smtp-mail.outlook.com:587 (legacy consumer endpoint)
+          if not ok:
+              ok = attempt("smtp-mail.outlook.com", "587", user, pwd, from_addr, to_addr)
+
+          sys.exit(0 if ok else 1)
+          PY
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO:   ${{ secrets.EMAIL_TO }}
