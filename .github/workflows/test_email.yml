@@ -1,42 +1,61 @@
-name: Test Email
+name: Test Email (Debug)
 
 on:
-  workflow_dispatch:   # lets you trigger it manually
+  workflow_dispatch:
 
 jobs:
   send:
     runs-on: ubuntu-latest
     steps:
-      - name: Send test email
+      - name: Dump which email env vars exist (no secrets shown)
+        run: |
+          for v in SMTP_HOST SMTP_PORT SMTP_USER EMAIL_FROM EMAIL_TO; do
+            if [ -z "${!v}" ]; then echo "::error::$v is NOT set"; else echo "$v is set"; fi
+          done
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO:   ${{ secrets.EMAIL_TO }}
+
+      - name: Send test email with verbose errors
         run: |
           python - <<'EOF'
-          import os, smtplib
+          import os, smtplib, sys, traceback
           from email.message import EmailMessage
 
-          host = os.environ["SMTP_HOST"]
-          port = int(os.environ["SMTP_PORT"])
-          user = os.environ["SMTP_USER"]
-          pwd  = os.environ["SMTP_PASS"]
-          from_addr = os.environ["EMAIL_FROM"]
-          to_addr   = os.environ["EMAIL_TO"]
+          def need(name):
+              v = os.environ.get(name)
+              if not v:
+                  print(f"::error::{name} is missing")
+                  sys.exit(1)
+              return v
+
+          host = need("SMTP_HOST")
+          port = int(need("SMTP_PORT"))
+          user = need("SMTP_USER")
+          pwd  = need("SMTP_PASS")
+          from_addr = need("EMAIL_FROM")
+          to_addr   = need("EMAIL_TO")
+
+          print(f"Host={host} Port={port} User={user} From={from_addr} To={to_addr}")
+          if from_addr.lower() != user.lower():
+              print("::warning::For Outlook/Hotmail, EMAIL_FROM should usually equal SMTP_USER")
 
           msg = EmailMessage()
           msg["Subject"] = "✅ Test Email from GitHub Actions"
           msg["From"] = from_addr
           msg["To"] = to_addr
-          msg.set_content("Hello!\n\nIf you see this, your SMTP secrets are working.")
+          msg.set_content("If you see this, SMTP worked.")
 
-          with smtplib.SMTP(host, port) as s:
+          try:
+              s = smtplib.SMTP(host, port, timeout=30)
+              s.set_debuglevel(1)  # print SMTP conversation (safe; hides password)
+              s.ehlo()
               s.starttls()
+              s.ehlo()
               s.login(user, pwd)
               s.send_message(msg)
-
-          print("Email sent OK")
-          EOF
-        env:
-          SMTP_HOST: ${{ secrets.SMTP_HOST }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
-          SMTP_USER: ${{ secrets.SMTP_USER }}
-          SMTP_PASS: ${{ secrets.SMTP_PASS }}
-          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
-          EMAIL_TO:   ${{ secrets.EMAIL_TO }}
+              s.quit()
+              print("Email se
