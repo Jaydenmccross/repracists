@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "7 * * * *"   # hourly at :07
   workflow_dispatch:
+    inputs:
+      force_test:
+        description: "Send a FORCE_TEST email instead of scanning"
+        required: false
+        default: "false"
 
 permissions:
   contents: write
@@ -18,7 +23,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Run watcher
+      - name: Run watcher (or force-test)
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
@@ -26,6 +31,7 @@ jobs:
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           EMAIL_TO:   ${{ secrets.EMAIL_TO }}
+          FORCE_TEST: ${{ github.event.inputs.force_test == 'true' && '1' || '' }}
         run: python politics_watcher.py
 
       - name: Commit logs if any (optional)
